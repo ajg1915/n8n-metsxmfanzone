@@ -1,0 +1,157 @@
+{
+	"name": "MetsXMFanZone - Game Day Alert",
+	"nodes": [
+		{
+			"parameters": {
+				"rule": {
+					"interval": [
+						{
+							"field": "cronExpression",
+							"expression": "0 9 * * *"
+						}
+					]
+				}
+			},
+			"id": "8d9089d5-c6a1-4b4b-9587-776332b4b62e",
+			"name": "Every day at 9 AM",
+			"type": "n8n-nodes-base.scheduleTrigger",
+			"typeVersion": 1.2,
+			"position": [
+				0,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "// Edit these values once. Other nodes read them from here.\nreturn [\n  {\n    json: {\n      // Discord channel > Edit Channel > Integrations > Webhooks > Copy Webhook URL\n      discordWebhookUrl: 'PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE',\n      // MLB team ID. 121 is the New York Mets.\n      teamId: 121,\n      timezone: 'America/New_York',\n    },\n  },\n];"
+			},
+			"id": "54a29fe3-4e31-42ab-9141-d10a63edd611",
+			"name": "Settings",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				220,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"url": "https://statsapi.mlb.com/api/v1/schedule",
+				"sendQuery": true,
+				"queryParameters": {
+					"parameters": [
+						{
+							"name": "sportId",
+							"value": "1"
+						},
+						{
+							"name": "teamId",
+							"value": "={{ $('Settings').first().json.teamId }}"
+						},
+						{
+							"name": "date",
+							"value": "={{ $now.setZone($('Settings').first().json.timezone).toFormat('yyyy-MM-dd') }}"
+						},
+						{
+							"name": "hydrate",
+							"value": "probablePitcher,venue,linescore"
+						}
+					]
+				},
+				"options": {}
+			},
+			"id": "98f15b52-c1ca-46e5-a155-78c21f53401c",
+			"name": "Get today's games",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				440,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "const { teamId, timezone } = $('Settings').first().json;\nconst games = ($json.dates?.[0]?.games) ?? [];\n\n// No game today: return nothing, so no message is posted.\nif (games.length === 0) return [];\n\nconst lines = games.map((game, i) => {\n  const home = game.teams.home;\n  const away = game.teams.away;\n  const metsAreHome = home.team.id === teamId;\n  const opponent = metsAreHome ? away.team.name : home.team.name;\n  const vs = metsAreHome ? 'vs' : '@';\n  const time = DateTime.fromISO(game.gameDate).setZone(timezone).toFormat('h:mm a ZZZZ');\n  const metsPitcher = (metsAreHome ? home : away).probablePitcher?.fullName ?? 'TBD';\n  const oppPitcher = (metsAreHome ? away : home).probablePitcher?.fullName ?? 'TBD';\n  const label = games.length > 1 ? `**Game ${i + 1}:** ` : '';\n\n  if (game.status.detailedState === 'Postponed') {\n    return `${label}Mets ${vs} ${opponent}: **POSTPONED**`;\n  }\n\n  return [\n    `${label}Mets ${vs} ${opponent}`,\n    `🕖 First pitch: ${time}`,\n    `🏟️ ${game.venue?.name ?? ''}`,\n    `⚾ Probable pitchers: ${metsPitcher} vs ${oppPitcher}`,\n  ].join('\\n');\n});\n\nconst header = games.length > 1 ? '🍎 **DOUBLEHEADER DAY! LET\\'S GO METS!** 🍎' : '🍎 **IT\\'S GAME DAY! LET\\'S GO METS!** 🍎';\n\nreturn [{ json: { message: [header, '', lines.join('\\n\\n')].join('\\n') } }];"
+			},
+			"id": "9c68614a-f9ac-4375-b072-aa8625ce8b30",
+			"name": "Build game day message",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				660,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"method": "POST",
+				"url": "={{ $('Settings').first().json.discordWebhookUrl }}",
+				"sendBody": true,
+				"specifyBody": "json",
+				"jsonBody": "={{ JSON.stringify({ content: $json.message }) }}",
+				"options": {}
+			},
+			"id": "e58a0937-0400-49b2-bbf2-f9e02780dce7",
+			"name": "Post to Discord",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				880,
+				0
+			]
+		}
+	],
+	"connections": {
+		"Every day at 9 AM": {
+			"main": [
+				[
+					{
+						"node": "Settings",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Settings": {
+			"main": [
+				[
+					{
+						"node": "Get today's games",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Get today's games": {
+			"main": [
+				[
+					{
+						"node": "Build game day message",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Build game day message": {
+			"main": [
+				[
+					{
+						"node": "Post to Discord",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		}
+	},
+	"active": false,
+	"settings": {
+		"executionOrder": "v1",
+		"timezone": "America/New_York"
+	},
+	"pinData": {},
+	"tags": []
+}

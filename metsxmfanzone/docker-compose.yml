@@ -1,0 +1,23 @@
+# Minimal n8n setup for the MetsXMFanZone workflows.
+# Start:  docker compose up -d
+# Open:   http://localhost:5678
+# For a public server, put n8n behind HTTPS and set N8N_HOST / WEBHOOK_URL.
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - '5678:5678'
+    environment:
+      GENERIC_TIMEZONE: America/New_York
+      TZ: America/New_York
+      N8N_RUNNERS_ENABLED: 'true'
+      # Allow the http:// login cookie for local use. Remove this line when you use HTTPS.
+      N8N_SECURE_COOKIE: 'false'
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+
+volumes:
+  n8n-data:

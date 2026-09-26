@@ -1,0 +1,136 @@
+{
+	"name": "MetsXMFanZone - Daily News Digest",
+	"nodes": [
+		{
+			"parameters": {
+				"rule": {
+					"interval": [
+						{
+							"field": "cronExpression",
+							"expression": "0 8 * * *"
+						}
+					]
+				}
+			},
+			"id": "545aa59d-718e-4ded-85cf-b77292ba5cf2",
+			"name": "Every day at 8 AM",
+			"type": "n8n-nodes-base.scheduleTrigger",
+			"typeVersion": 1.2,
+			"position": [
+				0,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "// Edit these values once. Other nodes read them from here.\nreturn [\n  {\n    json: {\n      // Discord channel > Edit Channel > Integrations > Webhooks > Copy Webhook URL\n      discordWebhookUrl: 'PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE',\n      // MLB team ID. 121 is the New York Mets.\n      teamId: 121,\n      timezone: 'America/New_York',\n      // Maximum number of headlines in one digest.\n      maxStories: 8,\n    },\n  },\n];"
+			},
+			"id": "4b435d17-e99e-4265-a2c7-3b5b6d0e962e",
+			"name": "Settings",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				220,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"url": "https://www.mlb.com/mets/feeds/news/rss.xml",
+				"options": {}
+			},
+			"id": "948a2231-d732-4158-aae6-f12fc4632223",
+			"name": "Read Mets news feed",
+			"type": "n8n-nodes-base.rssFeedRead",
+			"typeVersion": 1.1,
+			"position": [
+				440,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "const { maxStories } = $('Settings').first().json;\nconst cutoff = DateTime.now().minus({ hours: 24 });\n\nconst stories = $input\n  .all()\n  .map((item) => item.json)\n  .filter((s) => s.isoDate && DateTime.fromISO(s.isoDate) >= cutoff)\n  .slice(0, maxStories);\n\n// No new stories: return nothing, so no message is posted.\nif (stories.length === 0) return [];\n\n// Wrap links in <> so Discord does not show a large preview for each one.\nconst lines = stories.map((s) => `• **${s.title}**\\n  <${s.link}>`);\n\nlet message = ['📰 **Mets News - Last 24 Hours**', '', ...lines].join('\\n');\n// Discord rejects messages longer than 2000 characters.\nif (message.length > 2000) message = message.slice(0, 1997) + '...';\n\nreturn [{ json: { message } }];"
+			},
+			"id": "07397a64-f845-446b-99a6-7fd460024385",
+			"name": "Build digest",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				660,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"method": "POST",
+				"url": "={{ $('Settings').first().json.discordWebhookUrl }}",
+				"sendBody": true,
+				"specifyBody": "json",
+				"jsonBody": "={{ JSON.stringify({ content: $json.message }) }}",
+				"options": {}
+			},
+			"id": "8da5cfd6-3c0f-4837-bacc-ebf125163ee2",
+			"name": "Post to Discord",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				880,
+				0
+			]
+		}
+	],
+	"connections": {
+		"Every day at 8 AM": {
+			"main": [
+				[
+					{
+						"node": "Settings",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Settings": {
+			"main": [
+				[
+					{
+						"node": "Read Mets news feed",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Read Mets news feed": {
+			"main": [
+				[
+					{
+						"node": "Build digest",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Build digest": {
+			"main": [
+				[
+					{
+						"node": "Post to Discord",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		}
+	},
+	"active": false,
+	"settings": {
+		"executionOrder": "v1",
+		"timezone": "America/New_York"
+	},
+	"pinData": {},
+	"tags": []
+}
