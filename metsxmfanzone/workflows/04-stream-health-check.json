@@ -1,0 +1,112 @@
+{
+	"id": "MetsXMStreamHlth",
+	"name": "MetsXMFanZone - Stream Health Check",
+	"nodes": [
+		{
+			"parameters": {
+				"rule": {
+					"interval": [
+						{
+							"field": "cronExpression",
+							"expression": "*/5 * * * *"
+						}
+					]
+				}
+			},
+			"id": "106d9f73-75f8-4add-9e25-e3db4f58ff39",
+			"name": "Every 5 minutes",
+			"type": "n8n-nodes-base.scheduleTrigger",
+			"typeVersion": 1.2,
+			"position": [
+				0,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "// Edit these values once. Other nodes read them from here.\nreturn [\n  {\n    json: {\n      // Discord channel > Edit Channel > Integrations > Webhooks > Copy Webhook URL\n      discordWebhookUrl: 'PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE',\n      // The M3U8 (HLS) streams to check. Add one line per stream.\n      // Optional: headers: { Referer: 'https://example.com' } for streams that need them.\n      // Optional: enabled: false to skip a stream without deleting it.\n      streams: [\n        { name: 'Mets Live', url: 'PASTE_YOUR_M3U8_URL_HERE' },\n      ],\n      // Seconds to wait for each request.\n      timeoutSeconds: 15,\n      // Failed checks in a row before posting a \"down\" alert. 2 skips one-off blips.\n      failuresBeforeAlert: 2,\n      // Reload live playlists once to make sure new video keeps arriving.\n      checkLiveProgress: true,\n    },\n  },\n];"
+			},
+			"id": "fca116b1-e9ca-4dee-8867-69254f0ce850",
+			"name": "Settings",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				220,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "// Checks each stream in Settings and returns Discord messages.\n// Scheduled runs post only when a stream goes down or comes back.\n// Manual test runs post a report for every stream.\nconst settings = $('Settings').first().json;\nconst streams = (settings.streams ?? []).filter((s) => /^https?:\\/\\//.test(s?.url ?? '') && s.enabled !== false);\nconst timeoutMs = (settings.timeoutSeconds ?? 15) * 1000;\nconst failuresBeforeAlert = settings.failuresBeforeAlert ?? 2;\nconst isManualRun = $execution.mode === 'manual';\n\n// Resolve a playlist entry against the playlist URL. The Code node has no URL class.\nfunction resolveUrl(ref, base) {\n  if (/^[a-z][a-z0-9+.-]*:\\/\\//i.test(ref)) return ref;\n  const origin = base.match(/^[a-z][a-z0-9+.-]*:\\/\\/[^/?#]+/i)[0];\n  if (ref.startsWith('//')) return base.split(':')[0] + ':' + ref;\n  if (ref.startsWith('/')) return origin + ref;\n  const dir = base.split(/[?#]/)[0].replace(/[^/]*$/, '');\n  const parts = [];\n  for (const part of (dir.slice(origin.length) + ref).split('/')) {\n    if (part === '..') parts.pop();\n    else if (part !== '.') parts.push(part);\n  }\n  return origin + parts.join('/').replace(/^\\/?/, '/');\n}\n\nasync function get(what, url, headers, binary) {\n  const res = await this.helpers.httpRequest({\n    url,\n    method: 'GET',\n    headers,\n    timeout: timeoutMs,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    encoding: binary ? 'arraybuffer' : 'text',\n    json: false,\n  });\n  if (res.statusCode < 200 || res.statusCode >= 300) {\n    throw new Error(`${what} returned HTTP ${res.statusCode}`);\n  }\n  return res.body;\n}\n\nfunction toBytes(body) {\n  if (!body) return null;\n  if (body instanceof Uint8Array) return body;\n  if (body instanceof ArrayBuffer) return new Uint8Array(body);\n  if (Array.isArray(body.data)) return Uint8Array.from(body.data);\n  return null;\n}\n\nfunction parsePlaylist(text, url) {\n  const body = typeof text === 'string' ? text : String(text ?? '');\n  if (!body.trimStart().startsWith('#EXTM3U')) {\n    throw new Error('Response is not an M3U8 playlist');\n  }\n  const lines = body.split(/\\r?\\n/).map((l) => l.trim()).filter(Boolean);\n  const variants = [];\n  const segments = [];\n  let mediaSequence = 0;\n  let targetDuration = 6;\n  let isLive = true;\n  for (let i = 0; i < lines.length; i++) {\n    const line = lines[i];\n    if (line.startsWith('#EXT-X-STREAM-INF')) {\n      const bandwidth = Number((line.match(/BANDWIDTH=(\\d+)/) ?? [])[1] ?? 0);\n      const next = lines[i + 1];\n      if (next && !next.startsWith('#')) variants.push({ bandwidth, url: resolveUrl(next, url) });\n    } else if (line.startsWith('#EXTINF')) {\n      const next = lines[i + 1];\n      if (next && !next.startsWith('#')) segments.push(resolveUrl(next, url));\n    } else if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {\n      mediaSequence = Number(line.split(':')[1]);\n    } else if (line.startsWith('#EXT-X-TARGETDURATION:')) {\n      targetDuration = Number(line.split(':')[1]);\n    } else if (line.startsWith('#EXT-X-ENDLIST')) {\n      isLive = false;\n    }\n  }\n  return { variants, segments, mediaSequence, targetDuration, isLive };\n}\n\nasync function checkStream(stream) {\n  const headers = stream.headers ?? {};\n  let playlistUrl = stream.url;\n  let playlist = parsePlaylist(await get.call(this, 'Playlist', playlistUrl, headers), playlistUrl);\n\n  // A master playlist lists renditions. Check the highest quality one.\n  let variantCount = 0;\n  if (playlist.variants.length > 0) {\n    variantCount = playlist.variants.length;\n    playlistUrl = playlist.variants.sort((a, b) => b.bandwidth - a.bandwidth)[0].url;\n    playlist = parsePlaylist(await get.call(this, 'Quality playlist', playlistUrl, headers), playlistUrl);\n  }\n  if (playlist.segments.length === 0) throw new Error('Playlist has no video segments');\n\n  // Download the start of the newest segment.\n  const segmentUrl = playlist.segments[playlist.segments.length - 1];\n  const bytes = toBytes(await get.call(this, 'Newest video segment', segmentUrl, { ...headers, Range: 'bytes=0-4095' }, true));\n  if (bytes && bytes.length === 0) throw new Error('Newest segment is empty');\n  if (bytes && /^\\s*<(!doctype|html|\\?xml)/i.test(new TextDecoder().decode(bytes.slice(0, 64)))) {\n    throw new Error('Segment URL returned a web page, not video');\n  }\n\n  // A live playlist must add new segments. Reload it after one segment length.\n  if (playlist.isLive && settings.checkLiveProgress !== false) {\n    const waitSeconds = Math.min(Math.max(playlist.targetDuration * 1.5, 4), 30);\n    await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));\n    const again = parsePlaylist(await get.call(this, 'Playlist', playlistUrl, headers), playlistUrl);\n    const moved =\n      again.mediaSequence !== playlist.mediaSequence ||\n      again.segments[again.segments.length - 1] !== segmentUrl;\n    if (!moved) throw new Error(`Live playlist did not update in ${Math.round(waitSeconds)} seconds`);\n  }\n\n  return {\n    kind: playlist.isLive ? 'live' : 'on demand',\n    variantCount,\n    segmentCount: playlist.segments.length,\n  };\n}\n\nconst results = await Promise.all(\n  streams.map(async (stream) => {\n    const started = Date.now();\n    try {\n      const info = await checkStream.call(this, stream);\n      return { name: stream.name ?? stream.url, ok: true, ...info, ms: Date.now() - started };\n    } catch (error) {\n      return { name: stream.name ?? stream.url, ok: false, error: error.message, ms: Date.now() - started };\n    }\n  }),\n);\n\nfunction describe(r) {\n  if (!r.ok) return `🔴 **${r.name}** is down: ${r.error}`;\n  const renditions = r.variantCount > 1 ? `, ${r.variantCount} qualities` : '';\n  return `🟢 **${r.name}** is playing (${r.kind}${renditions}, ${(r.ms / 1000).toFixed(1)}s)`;\n}\n\nif (isManualRun) {\n  if (results.length === 0) return [{ json: { message: 'No streams to check. Add them in the Settings node.' } }];\n  return [{ json: { message: ['📺 **Stream check**', ...results.map(describe)].join('\\n'), results } }];\n}\n\n// Remember each stream's state. Static data is saved only for production runs.\nconst memory = $getWorkflowStaticData('global');\nmemory.streams = memory.streams ?? {};\nconst out = [];\nfor (const r of results) {\n  const state = memory.streams[r.name] ?? { down: false, failures: 0 };\n  if (r.ok) {\n    if (state.down) {\n      const minutes = Math.round((Date.now() - state.downSince) / 60000);\n      out.push({ json: { message: `✅ **${r.name}** is back up after ${minutes} min.`, result: r } });\n    }\n    memory.streams[r.name] = { down: false, failures: 0 };\n  } else {\n    state.failures += 1;\n    state.downSince = state.downSince ?? Date.now();\n    if (!state.down && state.failures >= failuresBeforeAlert) {\n      state.down = true;\n      out.push({ json: { message: describe(r), result: r } });\n    }\n    memory.streams[r.name] = state;\n  }\n}\n// Forget streams that were removed from Settings.\nfor (const name of Object.keys(memory.streams)) {\n  if (!results.some((r) => r.name === name)) delete memory.streams[name];\n}\n\nreturn out;"
+			},
+			"id": "9200467f-4de8-410c-8d38-3017ad213bd9",
+			"name": "Check streams",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				440,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"method": "POST",
+				"url": "={{ $('Settings').first().json.discordWebhookUrl }}",
+				"sendBody": true,
+				"specifyBody": "json",
+				"jsonBody": "={{ JSON.stringify({ content: $json.message }) }}",
+				"options": {}
+			},
+			"id": "c9754260-9fe8-40f1-ad79-5148966ab7c1",
+			"name": "Post to Discord",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				660,
+				0
+			]
+		}
+	],
+	"connections": {
+		"Every 5 minutes": {
+			"main": [
+				[
+					{
+						"node": "Settings",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Settings": {
+			"main": [
+				[
+					{
+						"node": "Check streams",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Check streams": {
+			"main": [
+				[
+					{
+						"node": "Post to Discord",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		}
+	},
+	"active": false,
+	"settings": {
+		"executionOrder": "v1",
+		"timezone": "America/New_York"
+	},
+	"pinData": {},
+	"tags": []
+}
