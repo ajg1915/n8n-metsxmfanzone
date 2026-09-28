@@ -1,0 +1,322 @@
+{
+	"name": "MetsXMFanZone - Create Live Stream Events",
+	"nodes": [
+		{
+			"parameters": {
+				"rule": {
+					"interval": [
+						{
+							"field": "cronExpression",
+							"expression": "0 6 * * *"
+						}
+					]
+				}
+			},
+			"id": "c0042b31-0783-5ce2-b2d6-1e5219cb7092",
+			"name": "Every day at 6 AM",
+			"type": "n8n-nodes-base.scheduleTrigger",
+			"typeVersion": 1.2,
+			"position": [
+				0,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "// Edit these values once. Other nodes read them from here.\n// The Supabase service role key is NOT stored here: it lives in the\n// \"MetsXMFanZone Supabase\" credential used by the Supabase HTTP nodes.\nreturn [\n  {\n    json: {\n      // Supabase > Project Settings > API > Project URL\n      supabaseUrl: 'https://rdmrxeplasttewtlfetc.supabase.co',\n      // How many days ahead to create events for.\n      daysAhead: 7,\n      timezone: 'America/New_York',\n      // Default stream links, same as Live Stream Management uses.\n      metsStreamUrl: 'https://video1.getstreamhosting.com:1936/resyweugpd/resyweugpd/playlist.m3u8',\n      nyTeamStreamUrl: 'https://mystream.metsxmfanzone.com/hls/mystream.m3u8',\n      // Set to false to create events as hidden drafts you publish by hand.\n      publish: true,\n      // Remove a team to stop creating its events.\n      teams: [\n        { page: 'mets', name: 'Mets', league: 'mlb', mlbTeamId: 121, hours: 3.5 },\n        { page: 'ny-jets', name: 'Jets', league: 'football/nfl', espnId: 'nyj', hours: 3.5 },\n        { page: 'ny-giants', name: 'Giants', league: 'football/nfl', espnId: 'nyg', hours: 3.5 },\n        { page: 'ny-knicks', name: 'Knicks', league: 'basketball/nba', espnId: 'ny', hours: 2.5 },\n        { page: 'brooklyn-nets', name: 'Nets', league: 'basketball/nba', espnId: 'bkn', hours: 2.5 },\n        { page: 'ny-rangers', name: 'Rangers', league: 'hockey/nhl', espnId: 'nyr', hours: 3 },\n        { page: 'ny-islanders', name: 'Islanders', league: 'hockey/nhl', espnId: 'nyi', hours: 3 },\n      ],\n    },\n  },\n];"
+			},
+			"id": "73f50c3c-4280-57eb-af84-7c4c7427cc18",
+			"name": "Settings",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				220,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"jsCode": "// One schedule request per team. MLB for the Mets, ESPN for the rest.\nconst { teams, daysAhead, timezone } = $('Settings').first().json;\n\nconst ymd = (date) =>\n  new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);\nconst start = new Date();\nconst end = new Date(start.getTime() + daysAhead * 24 * 60 * 60 * 1000);\n\nreturn teams.map((team) => ({\n  json: {\n    team,\n    url:\n      team.league === 'mlb'\n        ? `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=${team.mlbTeamId}&startDate=${ymd(start)}&endDate=${ymd(end)}&hydrate=team,venue`\n        : `https://site.api.espn.com/apis/site/v2/sports/${team.league}/teams/${team.espnId}/schedule`,\n  },\n}));"
+			},
+			"id": "de84d04e-60dd-56d2-9988-68cb4d968437",
+			"name": "Build schedule requests",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				440,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"url": "={{ $json.url }}",
+				"options": {}
+			},
+			"id": "397cd1db-ed8d-5a8e-9318-ab4792c37021",
+			"name": "Get team schedules",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				660,
+				0
+			],
+			"onError": "continueRegularOutput"
+		},
+		{
+			"parameters": {
+				"jsCode": "// Turn every team's schedule into live_streams rows for the next few days.\nconst settings = $('Settings').first().json;\nconst requests = $('Build schedule requests').all();\nconst responses = $input.all();\n\nconst HOUR = 60 * 60 * 1000;\nconst now = Date.now();\nconst until = now + settings.daysAhead * 24 * HOUR;\n\n// Same fan art the Mets schedule import uses.\nconst ART = 'https://rdmrxeplasttewtlfetc.supabase.co/storage/v1/object/public/content_uploads/fanart';\nconst METS_ART = {\n  'New York Yankees': `${ART}/mets-yankees.jpg`,\n  'Atlanta Braves': `${ART}/mets-braves.jpg`,\n  'Philadelphia Phillies': `${ART}/mets-phillies.jpg`,\n  'Los Angeles Dodgers': `${ART}/mets-dodgers.jpg`,\n};\n\nconst dateLabel = (iso) =>\n  new Intl.DateTimeFormat('en-US', { timeZone: settings.timezone, year: '2-digit', month: 'numeric', day: 'numeric' }).format(new Date(iso));\n\nconst games = [];\n\nresponses.forEach((response, i) => {\n  const { team } = requests[i].json;\n  const data = response.json;\n  if (data.error) return; // This team's schedule could not be loaded; try again next run.\n\n  if (team.league === 'mlb') {\n    for (const day of data.dates ?? []) {\n      for (const game of day.games ?? []) {\n        const state = game.status?.detailedState ?? '';\n        if (/postponed|cancelled|suspended/i.test(state) || game.status?.abstractGameState === 'Final') continue;\n        const isHome = game.teams.home.team.id === team.mlbTeamId;\n        const opponent = (isHome ? game.teams.away : game.teams.home).team.name;\n        games.push({\n          team,\n          start: game.gameDate,\n          isHome,\n          opponent,\n          venue: game.venue?.name ?? '',\n          label: game.gameType === 'S' ? 'Spring Training' : game.gameType === 'R' ? 'Regular Season' : 'Postseason',\n          thumbnail: METS_ART[opponent] ?? `${ART}/${isHome ? 'mets-home' : 'mets-away'}.jpg`,\n        });\n      }\n    }\n    return;\n  }\n\n  for (const event of data.events ?? []) {\n    const competition = event.competitions?.[0];\n    if (!competition) continue;\n    const status = competition.status?.type ?? {};\n    if (status.completed || /postponed|canceled|cancelled/i.test(status.name ?? '')) continue;\n    const us = competition.competitors.find((c) => c.team?.abbreviation?.toLowerCase() === team.espnId)\n      ?? competition.competitors.find((c) => c.team?.displayName?.includes(team.name));\n    const them = competition.competitors.find((c) => c !== us);\n    if (!us || !them) continue;\n    games.push({\n      team,\n      start: new Date(event.date).toISOString(),\n      isHome: us.homeAway === 'home',\n      opponent: them.team.displayName,\n      venue: competition.venue?.fullName ?? '',\n      label: event.seasonType?.name ?? '',\n      thumbnail: null,\n    });\n  }\n});\n\nreturn games\n  .filter((g) => {\n    const t = new Date(g.start).getTime();\n    return t > now && t <= until;\n  })\n  .sort((a, b) => new Date(a.start) - new Date(b.start))\n  .map((g) => {\n    const isMets = g.team.page === 'mets';\n    const where = `${g.isHome ? 'vs' : '@'} ${g.opponent}`;\n    return {\n      json: {\n        teamPage: g.team.page,\n        teamName: g.team.name,\n        opponent: g.opponent,\n        title: `${g.team.name} ${g.isHome ? 'Vs' : '@'} ${g.opponent} ${dateLabel(g.start)}`,\n        description: [g.label, `${where}${g.venue ? ` at ${g.venue}` : ''}`].filter(Boolean).join(': '),\n        stream_url: isMets ? settings.metsStreamUrl : settings.nyTeamStreamUrl,\n        status: 'scheduled',\n        published: settings.publish,\n        scheduled_start: g.start,\n        scheduled_end: new Date(new Date(g.start).getTime() + g.team.hours * HOUR).toISOString(),\n        thumbnail_url: g.thumbnail,\n        // Same pages the admin form sets: the team page (not for the Mets) plus \"live\".\n        assigned_pages: isMets ? ['live'] : [g.team.page, 'live'],\n      },\n    };\n  });"
+			},
+			"id": "e0dad200-ce43-509e-862c-c2c08ff712ff",
+			"name": "Build stream events",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				880,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"url": "={{ $('Settings').first().json.supabaseUrl }}/rest/v1/live_streams?select=id,title,status,scheduled_start,assigned_pages&and=(scheduled_start.gte.{{ $now.minus({ days: 1 }).toUTC().toISO() }},scheduled_start.lte.{{ $now.plus({ days: $('Settings').first().json.daysAhead + 2 }).toUTC().toISO() }})",
+				"authentication": "predefinedCredentialType",
+				"nodeCredentialType": "supabaseApi",
+				"options": {}
+			},
+			"id": "5abd4cfc-f8c2-598b-a9fa-063ab1684bdb",
+			"name": "Get existing streams",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				1100,
+				0
+			],
+			"credentials": {
+				"supabaseApi": {
+					"id": "",
+					"name": "MetsXMFanZone Supabase"
+				}
+			},
+			"executeOnce": true,
+			"alwaysOutputData": true
+		},
+		{
+			"parameters": {
+				"jsCode": "// Compare the schedule with what is already in Live Stream Management.\n// New games are created. A game whose start time moved is updated, but only\n// while it is still \"scheduled\", so a stream you already started is never touched.\nconst { timezone } = $('Settings').first().json;\nconst games = $('Build stream events').all().map((item) => item.json);\nconst existing = $input.all().map((item) => item.json).filter((row) => row.id);\n\nconst day = (iso) =>\n  new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));\nconst lower = (s) => (s ?? '').toLowerCase();\n\nconst isSameGame = (row, game) => {\n  if (row.title === game.title) return true;\n  if (!row.scheduled_start || day(row.scheduled_start) !== day(game.scheduled_start)) return false;\n  const title = lower(row.title);\n  const pages = row.assigned_pages ?? [];\n  const sameTeam = game.teamPage === 'mets'\n    ? /\\bmets\\b/.test(title)\n    : pages.includes(game.teamPage) || title.includes(lower(game.teamName));\n  // Match on the opponent's nickname (\"Braves\") so \"Mets Vs Braves\" and\n  // \"Mets Vs Atlanta Braves\" count as the same game.\n  const nickname = lower(game.opponent.split(' ').pop());\n  return sameTeam && title.includes(nickname);\n};\n\nconst out = [];\nconst claimed = new Set();\n\nfor (const game of games) {\n  const match = existing.find((row) => !claimed.has(row.id) && isSameGame(row, game));\n  const { teamPage, teamName, opponent, ...row } = game;\n\n  if (!match) {\n    out.push({ json: { action: 'create', title: game.title, row } });\n    continue;\n  }\n  claimed.add(match.id);\n\n  const moved = Math.abs(new Date(match.scheduled_start) - new Date(game.scheduled_start)) > 60 * 1000;\n  if (moved && match.status === 'scheduled') {\n    out.push({\n      json: {\n        action: 'update',\n        id: match.id,\n        title: match.title,\n        row: { scheduled_start: row.scheduled_start, scheduled_end: row.scheduled_end },\n      },\n    });\n  }\n}\n\nreturn out;"
+			},
+			"id": "cbd5d8c5-90fb-5be6-b8fb-e2b758f5e7ab",
+			"name": "Plan changes",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [
+				1320,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"conditions": {
+					"options": {
+						"caseSensitive": true,
+						"leftValue": "",
+						"typeValidation": "strict"
+					},
+					"conditions": [
+						{
+							"id": "c1",
+							"leftValue": "={{ $json.action }}",
+							"rightValue": "create",
+							"operator": {
+								"type": "string",
+								"operation": "equals"
+							}
+						}
+					],
+					"combinator": "and"
+				},
+				"options": {}
+			},
+			"id": "13f44cbc-da4c-562e-8679-07b08d265951",
+			"name": "Create or update?",
+			"type": "n8n-nodes-base.if",
+			"typeVersion": 2,
+			"position": [
+				1540,
+				0
+			]
+		},
+		{
+			"parameters": {
+				"method": "POST",
+				"url": "={{ $('Settings').first().json.supabaseUrl }}/rest/v1/live_streams",
+				"authentication": "predefinedCredentialType",
+				"nodeCredentialType": "supabaseApi",
+				"sendHeaders": true,
+				"headerParameters": {
+					"parameters": [
+						{
+							"name": "Prefer",
+							"value": "return=minimal"
+						}
+					]
+				},
+				"sendBody": true,
+				"specifyBody": "json",
+				"jsonBody": "={{ JSON.stringify($json.row) }}",
+				"options": {}
+			},
+			"id": "d0e5ca85-4110-522c-a9a2-9f6597518f7e",
+			"name": "Create live stream",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				1760,
+				0
+			],
+			"credentials": {
+				"supabaseApi": {
+					"id": "",
+					"name": "MetsXMFanZone Supabase"
+				}
+			}
+		},
+		{
+			"parameters": {
+				"method": "PATCH",
+				"url": "={{ $('Settings').first().json.supabaseUrl }}/rest/v1/live_streams?id=eq.{{ $json.id }}",
+				"authentication": "predefinedCredentialType",
+				"nodeCredentialType": "supabaseApi",
+				"sendHeaders": true,
+				"headerParameters": {
+					"parameters": [
+						{
+							"name": "Prefer",
+							"value": "return=minimal"
+						}
+					]
+				},
+				"sendBody": true,
+				"specifyBody": "json",
+				"jsonBody": "={{ JSON.stringify($json.row) }}",
+				"options": {}
+			},
+			"id": "92cba613-7409-5898-864e-eafb1be2327f",
+			"name": "Update start time",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [
+				1760,
+				200
+			],
+			"credentials": {
+				"supabaseApi": {
+					"id": "",
+					"name": "MetsXMFanZone Supabase"
+				}
+			}
+		}
+	],
+	"connections": {
+		"Every day at 6 AM": {
+			"main": [
+				[
+					{
+						"node": "Settings",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Settings": {
+			"main": [
+				[
+					{
+						"node": "Build schedule requests",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Build schedule requests": {
+			"main": [
+				[
+					{
+						"node": "Get team schedules",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Get team schedules": {
+			"main": [
+				[
+					{
+						"node": "Build stream events",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Build stream events": {
+			"main": [
+				[
+					{
+						"node": "Get existing streams",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Get existing streams": {
+			"main": [
+				[
+					{
+						"node": "Plan changes",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Plan changes": {
+			"main": [
+				[
+					{
+						"node": "Create or update?",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		},
+		"Create or update?": {
+			"main": [
+				[
+					{
+						"node": "Create live stream",
+						"type": "main",
+						"index": 0
+					}
+				],
+				[
+					{
+						"node": "Update start time",
+						"type": "main",
+						"index": 0
+					}
+				]
+			]
+		}
+	},
+	"active": false,
+	"settings": {
+		"executionOrder": "v1",
+		"timezone": "America/New_York"
+	},
+	"pinData": {},
+	"tags": []
+}
