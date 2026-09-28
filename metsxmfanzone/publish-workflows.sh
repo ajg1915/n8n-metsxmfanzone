@@ -15,6 +15,12 @@ case "$url" in
     exit 1
     ;;
 esac
+case "$url" in
+  *[!A-Za-z0-9:/._?=\&-]*)
+    echo "The webhook URL has unexpected characters. Copy it again from Discord." >&2
+    exit 1
+    ;;
+esac
 
 cd "$(dirname "$0")"
 
@@ -22,15 +28,19 @@ cd "$(dirname "$0")"
 # n8n server is not using.
 docker compose exec -T -e N8N_RUNNERS_BROKER_PORT=5690 -e WEBHOOK="$url" n8n sh -c '
   set -e
+  # The copies hold the webhook URL, so keep them private and always remove them.
+  umask 077
+  trap "rm -rf /tmp/metsxm" EXIT
   rm -rf /tmp/metsxm && mkdir /tmp/metsxm
+  # Escape characters that are special in a sed replacement, such as "&".
+  url=$(printf "%s" "$WEBHOOK" | sed "s/[\\#&]/\\\\&/g")
   for f in /workflows/*.json; do
-    sed "s#PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE#$WEBHOOK#" "$f" > "/tmp/metsxm/$(basename "$f")"
+    sed "s#PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE#$url#" "$f" > "/tmp/metsxm/$(basename "$f")"
   done
   n8n import:workflow --separate --input=/tmp/metsxm
   for id in $(grep -ho "\"id\": \"MetsXM[A-Za-z0-9]*\"" /tmp/metsxm/*.json | cut -d\" -f4); do
     n8n publish:workflow --id="$id"
   done
-  rm -rf /tmp/metsxm
 '
 
 docker compose restart n8n

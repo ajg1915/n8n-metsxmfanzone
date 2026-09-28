@@ -66,19 +66,19 @@ n8n restarts on its own after a crash or a server reboot
 ### 3. Open the editor
 
 The editor listens only on the server itself, so it is not open to the
-internet. Choose one of these ways to open it.
-
-**SSH tunnel (no domain needed).** On your computer, run:
+internet. On your computer, open an SSH tunnel to it:
 
 ```bash
 ssh -N -L 5678:localhost:5678 root@YOUR_SERVER_IP
 ```
 
-Keep it running and open <http://localhost:5678>. The first time, create your
-owner account.
+Keep it running and open <http://localhost:5678>. Create your owner account
+now, before you make n8n public in any way, because the first visitor to a new
+n8n becomes its owner.
 
-**HTTPS with your own domain.** Use this if you want to open n8n from anywhere
-or receive webhooks later.
+**Optional: HTTPS with your own domain.** Use this if you want to open n8n from
+anywhere without a tunnel, or to receive webhooks later. Create the owner
+account through the tunnel first.
 
 1. Add a DNS **A** record for a name such as `n8n.metsxmfanzone.com` that
    points to the server IP address.
@@ -90,8 +90,7 @@ or receive webhooks later.
    ```
 
 3. Run `docker compose up -d`. Caddy gets a free HTTPS certificate.
-4. Open `https://n8n.metsxmfanzone.com` and create your owner account at once,
-   because the first visitor to a new n8n becomes its owner.
+4. Open `https://n8n.metsxmfanzone.com` and sign in.
 
 ### 4. Check that it works
 
