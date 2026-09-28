@@ -1,19 +1,23 @@
 # Minimal n8n setup for the MetsXMFanZone workflows.
 # Start:  docker compose up -d
 # Open:   http://localhost:5678
-# For a public server, put n8n behind HTTPS and set N8N_HOST / WEBHOOK_URL.
+# On a server, open the editor through an SSH tunnel, or add HTTPS with
+# docker-compose.https.yml. See README.md.
 
 services:
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     restart: unless-stopped
     ports:
-      - '5678:5678'
+      # Only this machine can reach the editor. Use an SSH tunnel from your
+      # computer, or docker-compose.https.yml for a public HTTPS address.
+      - '127.0.0.1:5678:5678'
     environment:
       GENERIC_TIMEZONE: America/New_York
       TZ: America/New_York
       N8N_RUNNERS_ENABLED: 'true'
-      # Allow the http:// login cookie for local use. Remove this line when you use HTTPS.
+      # Allow the http:// login cookie for localhost and SSH tunnels.
+      # docker-compose.https.yml turns it back on.
       N8N_SECURE_COOKIE: 'false'
     volumes:
       - n8n-data:/home/node/.n8n
