@@ -1,0 +1,30 @@
+# Adds a public HTTPS address for the n8n editor, with a free certificate
+# from Let's Encrypt. Point your domain's DNS A record at the server first.
+#
+# Start: N8N_DOMAIN=n8n.example.com docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+
+services:
+  n8n:
+    environment:
+      N8N_HOST: ${N8N_DOMAIN:?Set N8N_DOMAIN to your domain}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${N8N_DOMAIN}/
+      N8N_SECURE_COOKIE: 'true'
+      N8N_PROXY_HOPS: 1
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      N8N_DOMAIN: ${N8N_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - n8n
+
+volumes:
+  caddy-data:
